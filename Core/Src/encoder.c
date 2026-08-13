@@ -26,7 +26,7 @@ void Encoder_UpdateSpeed(void)
     int16_t right_pulse = 0;
 
     // 1. 读取当前周期内的脉冲变化量
-    left_pulse = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_LEFT_TIM);
+    left_pulse = -(int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_LEFT_TIM);
     right_pulse = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_RIGHT_TIM);
 
     // 2. 清零计数器，为下一个周期做准备

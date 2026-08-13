@@ -1,18 +1,38 @@
-# STM32 CubeIDE build output
+# ================== STM32CubeIDE 编译中间文件过滤 ==================
+# 只保留源码 (.c/.h) 和工程配置文件，过滤所有编译产物
+
+# ---- 编译输出目录 ----
 Debug/
 Release/
 
-# IDE metadata
-.settings/
-.project
-.cproject
-
-# Misc
+# ---- 编译中间文件 ----
 *.o
 *.d
-*.elf
-*.hex
-*.bin
+*.lst
 *.map
-*.list
+*.elf
+*.bin
+*.hex
+*.cyclo
 *.su
+*.list
+*.mk
+*.scc
+
+# ---- 构建系统临时文件 ----
+makefile
+objects.*
+sources.*
+subdir.*
+
+# ---- CubeIDE 工作区元数据 ----
+/.mxproject
+
+# ---- 保留的文件类型 (显式声明，防止误过滤) ----
+# *.c   - C 源文件
+# *.h   - 头文件
+# *.ioc - STM32CubeMX 工程配置
+# *.s   - 启动汇编文件
+# *.ld  - 链接脚本
+# *.launch - 调试配置
+# .project / .cproject / .settings/ - Eclipse 工程配置
