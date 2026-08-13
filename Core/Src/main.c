@@ -48,15 +48,15 @@
  * 2 - 仅测试右轮 (左轮目标速度强制为 0，专门用于调右轮 PID)
  * 0 - 左右双轮同时联动测试
  */
-#define TEST_MOTOR_MODE       1
+#define TEST_MOTOR_MODE       0
 
 /* 2. 默认运动测试目标速度 (编码器脉冲数/10ms控制周期) */
-#define DEFAULT_TARGET_SPEED  10.0f
+#define DEFAULT_TARGET_SPEED  20.0f
 
 /* 3. 运动过程各阶段时间配置 (单位: ms) */
 #define WAIT_TRIGGER_DELAY_MS 1000   /* 上位机发送速度后延迟 1s 响应 */
 #define MOTION_BUFFER_MS      2000   /* 上电/触发后的缓冲静止时间 2s */
-#define MOTION_RUN_MS         2000   /* 电机转动持续时间 2s */
+#define MOTION_RUN_MS         7000   /* 电机转动持续时间 2s */
 
 /* USER CODE END PD */
 
