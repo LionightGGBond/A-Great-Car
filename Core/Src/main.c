@@ -29,9 +29,7 @@
 #include "tb6612.h"
 #include "chassis.h"
 #include "encoder.h"
-#include "vofa.h"
-#include <stdio.h>
-#include <string.h>
+#include "Close_line.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,22 +39,16 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* ================== PID 调参及测试参数配置 ================== */
-
-/* 1. 调试轮子选择 (一键切换测试模式)
- * 1 - 仅测试左轮 (右轮目标速度强制为 0，专门用于调左轮 PID)
- * 2 - 仅测试右轮 (左轮目标速度强制为 0，专门用于调右轮 PID)
- * 0 - 左右双轮同时联动测试
- */
-#define TEST_MOTOR_MODE       0
-
-/* 2. 默认运动测试目标速度 (编码器脉冲数/10ms控制周期) */
-#define DEFAULT_TARGET_SPEED  20.0f
-
-/* 3. 运动过程各阶段时间配置 (单位: ms) */
-#define WAIT_TRIGGER_DELAY_MS 1000   /* 上位机发送速度后延迟 1s 响应 */
-#define MOTION_BUFFER_MS      2000   /* 上电/触发后的缓冲静止时间 2s */
-#define MOTION_RUN_MS         7000   /* 电机转动持续时间 2s */
+/* 循迹时直线行驶的基础目标速度，保持原 main.c 中的 20 */
+#define CLOSE_LINE_BASE_SPEED   20.0f
+/* 循迹速度表的最大值，用于把原始查表速度等比例缩放到基础速度附近 */
+#define CLOSE_LINE_TABLE_MAX    40.0f
+/* 上电后先保持静止缓冲的时间，单位：毫秒 */
+#define CLOSE_LINE_BUFFER_MS    2000U
+/* 循迹运动持续时间，单位：毫秒 */
+#define CLOSE_LINE_RUN_MS       100000U
+/* 循迹状态采集和控制周期，单位：毫秒 */
+#define CLOSE_LINE_PERIOD_MS    10U
 
 /* USER CODE END PD */
 
@@ -69,72 +61,16 @@
 
 /* USER CODE BEGIN PV */
 
-static char rx_buffer[64];             /* DMA 串口数据接收缓冲区 */
-
-
-static float current_set_speed = DEFAULT_TARGET_SPEED; /* 当前运动的目标速度 */
-static volatile uint8_t trigger_flag = 0;              /* 串口指令触发运动标志位 */
-static volatile uint8_t trigger_auto_on_boot = 1;      /* 上电自动触发一次运动标志位 */
-extern DMA_HandleTypeDef hdma_usart1_rx;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void Set_Target_Speed_By_Mode(float speed);
-static void Parse_VOFA_Command(char *cmd);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/**
-  * @brief 根据测试模式 (TEST_MOTOR_MODE) 赋予左右轮目标速度
-  * @param speed: 设定目标速度
-  */
-static void Set_Target_Speed_By_Mode(float speed)
-{
-#if (TEST_MOTOR_MODE == 1)
-    target_speed_left  = speed;
-    target_speed_right = 0.0f;
-#elif (TEST_MOTOR_MODE == 2)
-    target_speed_left  = 0.0f;
-    target_speed_right = speed;
-#else
-    target_speed_left  = speed;
-    target_speed_right = speed;
-#endif
-}
-
-/**
-  * @brief 解析 VOFA / 串口上位机发送的调参及控制指令
-  * @param cmd: 包含完整指令信息的字符串
-  * @note  支持指令类型:
-  *        1. "LP%f\n" : 动态更新左轮 Kp 项 (如 LP1.5\n)
-  *        2. "RP%f\n" : 动态更新右轮 Kp 项 (如 RP2.0\n)
-  *        3. "V%f\n" 或直接发送数字 "%f\n" : 更改运动速度并触发整套运动过程
-  */
-static void Parse_VOFA_Command(char *cmd)
-{
-    float val = 0.0f;
-
-    /* 匹配 LP%f 格式: 修改左轮 Kp */
-    if (sscanf(cmd, "LP%f", &val) == 1)
-    {
-        PID_Left.Kp = val;
-    }
-    /* 匹配 RP%f 格式: 修改右轮 Kp (备用) */
-    else if (sscanf(cmd, "RP%f", &val) == 1)
-    {
-        PID_Right.Kp = val;
-    }
-    /* 匹配 V%f 格式 (例如 V8.0) 或直接发送数字 (例如 8.0) */
-    else if (sscanf(cmd, "V%f", &val) == 1 || sscanf(cmd, "%f", &val) == 1)
-    {
-        current_set_speed = val;
-        trigger_flag = 1; /* 置位标志位，通知主循环触发整套运动过程 */
-    }
-}
 
 /* USER CODE END 0 */
 
@@ -176,51 +112,69 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  /* 1. 初始化电机驱动与控制算法模块 */
-  TB6612_Init();      /* 初始化电机 PWM 驱动 */
-  Chassis_Init();     /* 初始化底盘 PID 参数 */
-  Encoder_Init();     /* 启动编码器计数定时器 */
+  /* 初始化 TB6612 电机驱动，启动左右电机 PWM */
+  TB6612_Init();
 
-  /* 启动 DMA + 空闲中断接收机制 */
-    /* 当收到一帧完整数据（由空闲总线判定）或缓冲区满时，会触发回调 */
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, (uint8_t *)rx_buffer, sizeof(rx_buffer));
+  /* 初始化左右轮 PID 控制器参数 */
+  Chassis_Init();
 
-    /* 可选优化：关闭 DMA 的过半中断 (Half Transfer)，防止变长指令触发误判 */
-    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+  /* 启动左右轮编码器测速定时器 */
+  Encoder_Init();
 
-    Set_Target_Speed_By_Mode(0.0f);
-    HAL_TIM_Base_Start_IT(&htim1);
+  /* 初始阶段让左右轮目标速度都为 0，保证小车静止 */
+  target_speed_left  = 0.0f;
+  target_speed_right = 0.0f;
+
+  /* 启动 TIM1 中断，周期执行编码器更新和底盘 PID 控制 */
+  HAL_TIM_Base_Start_IT(&htim1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      /* 判断是否需要执行运动过程：上电首次自动触发 或 串口收到速度值后触发 */
-      if (trigger_auto_on_boot || trigger_flag)
+      /* 按控制周期计算整个运动过程中需要执行的控制次数 */
+      uint32_t run_cycles = CLOSE_LINE_RUN_MS / CLOSE_LINE_PERIOD_MS;
+      uint32_t i;
+      /* 当前五路循迹传感器的状态位图 */
+      uint8_t state;
+      /* 查表得到的左右轮原始速度 */
+      uint8_t left_speed;
+      uint8_t right_speed;
+
+      /* 上电缓冲阶段：保持左右轮停止 */
+      target_speed_left  = 0.0f;
+      target_speed_right = 0.0f;
+      HAL_Delay(CLOSE_LINE_BUFFER_MS);
+
+      /* 循迹运动阶段，每个控制周期根据传感器状态调整一次小车姿态 */
+      for (i = 0; i < run_cycles; i++)
       {
-          if (!trigger_auto_on_boot && trigger_flag)
-          {
-              /* 在上位机发送速度值后，单片机延迟 1s 后响应 */
-              HAL_Delay(WAIT_TRIGGER_DELAY_MS);
-              trigger_flag = 0;
-          }
-          trigger_auto_on_boot = 0; /* 上电触发仅生效一次 */
+          /* 读取五路传感器，得到当前压线状态 */
+          state = CloseLine_ReadState();
 
-          /* [阶段 1] 缓冲 2s (目标速度为 0，电机制动) */
-          Set_Target_Speed_By_Mode(0.0f);
-          HAL_Delay(MOTION_BUFFER_MS);
+          /* 根据压线状态查表，得到原始左右轮差速值 */
+          CloseLine_GetSpeedPair(state, &left_speed, &right_speed);
 
-          /* [阶段 2] 电机转动 2s (达到设定的目标速度) */
-          Set_Target_Speed_By_Mode(current_set_speed);
-          HAL_Delay(MOTION_RUN_MS);
+          /* 将原始速度表按基础速度等比例缩放后，写入左右轮目标速度 */
+          target_speed_left  = CLOSE_LINE_BASE_SPEED *
+                               ((float)left_speed / CLOSE_LINE_TABLE_MAX);
+          target_speed_right = CLOSE_LINE_BASE_SPEED *
+                               ((float)right_speed / CLOSE_LINE_TABLE_MAX);
 
-          /* [阶段 3] 停止转动 */
-          Set_Target_Speed_By_Mode(0.0f);
+          /* 等待一个控制周期，期间 TIM1 中断会执行底盘 PID 控制 */
+          HAL_Delay(CLOSE_LINE_PERIOD_MS);
       }
 
-      /* 空闲等待 (TIM1 中断一直在后台持续运行，编码器数据不会中断) */
-      HAL_Delay(10);
+      /* 循迹运动结束后停止小车 */
+      target_speed_left  = 0.0f;
+      target_speed_right = 0.0f;
+
+      /* 保持停车状态，防止主循环再次触发运动流程 */
+      while (1)
+      {
+          HAL_Delay(10);
+      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -270,54 +224,28 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 
 /**
-  * @brief  TIM1 定时器中断周期回调函数 (10ms 触发一次)
-  * @note   核心数据调度与控制程序：
-  *         1. 读取当前编码器脉冲数 (实际速度)
-  *         2. 进行 PID 控制解算并输出到电机驱动器
-  *         3. 将目标速度与实际速度打包通过 VOFA+ 发送
+  * @brief  TIM1 periodic control callback.
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM1)
     {
-        /* 【修改1】正确声明一个包含4个元素的浮点型数组 */
-        float vofa_data[4];
-
-        /* 1. 更新编码器反馈实际速度 */
+        /* 更新左右轮编码器实测速度 */
         Encoder_UpdateSpeed();
 
-        /* 2. PID 计算并驱动电机 */
+        /* 根据左右轮目标速度和实测速度执行 PID，并驱动 TB6612 */
         Chassis_UpdateTask(Encoder_Left.speed, Encoder_Right.speed);
 
-        /* 3. 打包 VOFA 4 通道数据 */
-        /* 【修改2】为每个通道指定正确的数组下标 */
-        vofa_data[0] = target_speed_left;    /* 通道 0: 左轮目标速度 */
-        vofa_data[1] = Encoder_Left.speed;   /* 通道 1: 左轮实际速度 (编码器) */
-        vofa_data[2] = target_speed_right;   /* 通道 2: 右轮目标速度 */
-        vofa_data[3] = Encoder_Right.speed;  /* 通道 3: 右轮实际速度 (编码器) */
-
-        /* 4. 通过串口发送 4 通道波形数据 */
-        /* 此时传入 vofa_data(数组首地址，即 float *)，语法完全正确 */
-        VOFA_SendJustFloat(vofa_data, 4);
-    }
-}
-/**
-  * @brief  串口中断接收完成回调函数
-  * @note   解析来自 VOFA 上位机的指令以实现 PID 实时调参及运动触发
-  */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
-{
-    if (huart->Instance == USART1)
-    {
-        /* 1. 为接收到的字符串添加结束符，防止越界解析 */
-        rx_buffer[Size] = '\0';
-
-        /* 2. 直接将完整的一帧数据交给解析函数 */
-        Parse_VOFA_Command(rx_buffer);
-
-        /* 3. 必须重新开启 DMA 接收，准备迎接下一帧指令 */
-        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, (uint8_t *)rx_buffer, sizeof(rx_buffer));
-        __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+        /* 上位机 VOFA 波形发送功能已关闭，保留原代码供以后恢复使用。
+        {
+            float vofa_data[4];
+            vofa_data[0] = target_speed_left;
+            vofa_data[1] = Encoder_Left.speed;
+            vofa_data[2] = target_speed_right;
+            vofa_data[3] = Encoder_Right.speed;
+            VOFA_SendJustFloat(vofa_data, 4);
+        }
+        */
     }
 }
 

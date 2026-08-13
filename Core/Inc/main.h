@@ -73,6 +73,16 @@ void Error_Handler(void);
 #define BIN1_GPIO_Port GPIOB
 #define BIN2_Pin GPIO_PIN_1
 #define BIN2_GPIO_Port GPIOB
+#define Left_Pin GPIO_PIN_13
+#define Left_GPIO_Port GPIOB
+#define M_Left_Pin GPIO_PIN_14
+#define M_Left_GPIO_Port GPIOB
+#define Middle_Pin GPIO_PIN_15
+#define Middle_GPIO_Port GPIOA
+#define M_Right_Pin GPIO_PIN_3
+#define M_Right_GPIO_Port GPIOB
+#define Right_Pin GPIO_PIN_4
+#define Right_GPIO_Port GPIOB
 #define EC_CH2_Left_Pin GPIO_PIN_6
 #define EC_CH2_Left_GPIO_Port GPIOB
 #define EC_CH1_Left_Pin GPIO_PIN_7
